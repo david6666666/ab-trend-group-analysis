@@ -17,6 +17,7 @@ SIMILARITY_MEDIUM_SCORE = 0.45
 
 
 def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    # Excel 里表头存在 Y_A / Y-A / 带空格等不同写法，这里先统一到固定列名。
     rename_map: dict[str, str] = {}
     for column in df.columns:
         normalized = str(column).strip().replace("-", "_").replace(" ", "")
@@ -48,6 +49,7 @@ def sign_of_delta(value: float) -> int:
 def fill_zero_signs(signs: Iterable[int]) -> list[int]:
     filled = list(signs)
     last_non_zero = 0
+    # 第一遍向前填充：把“持平”点视为延续上一段趋势，避免平点把 group 切得过碎。
     for index, value in enumerate(filled):
         if value == 0:
             filled[index] = last_non_zero
@@ -55,6 +57,7 @@ def fill_zero_signs(signs: Iterable[int]) -> list[int]:
             last_non_zero = value
 
     next_non_zero = 0
+    # 第二遍向后补齐：处理序列开头连续持平、前面没有可继承趋势的情况。
     for index in range(len(filled) - 1, -1, -1):
         if filled[index] == 0:
             filled[index] = next_non_zero
@@ -64,6 +67,7 @@ def fill_zero_signs(signs: Iterable[int]) -> list[int]:
 
 
 def build_state_series(df: pd.DataFrame) -> list[tuple[int, int]]:
+    # 先分别计算 A/B 的涨跌方向，再把它们拼成 (A趋势, B趋势) 的联合状态。
     a_signs = fill_zero_signs(sign_of_delta(delta) for delta in df["Y_A"].diff().fillna(0.0))
     b_signs = fill_zero_signs(sign_of_delta(delta) for delta in df["Y_B"].diff().fillna(0.0))
     return list(zip(a_signs, b_signs))
@@ -73,6 +77,7 @@ def build_initial_groups(states: list[tuple[int, int]]) -> list[dict[str, object
     if not states:
         return []
 
+    # 只要联合状态变化，就切出一个新的原始 group。
     groups: list[dict[str, object]] = []
     start = 0
     current_state = states[0]
@@ -111,6 +116,10 @@ def merge_short_groups(
             previous = next_groups[-1] if next_groups else None
             following = dict(merged[index + 1]) if index + 1 < len(merged) else None
 
+            # 短段合并规则：
+            # 1. 前后状态一致时直接桥接；
+            # 2. 前后都存在但状态不同，就并到更长的邻居；
+            # 3. 只剩一侧邻居时，并到那一侧。
             if previous and following and previous["state"] == following["state"]:
                 previous["end"] = following["end"]
                 index += 2
@@ -171,6 +180,9 @@ def compute_similarity_score(
     slope_gap_norm: float,
     pearson_corr: float | None,
 ) -> float:
+    # 相似度由三部分组成：
+    # 方向是否一致 + 斜率是否接近 + 组内形状相关性。
+    # 权重偏向“趋势方向”和“斜率差”，相关系数作为辅助解释。
     direction_score = 1.0 if direction_same else 0.0
     slope_score = max(0.0, 1.0 - slope_gap_norm)
     corr_score = ((pearson_corr + 1.0) / 2.0) if pearson_corr is not None else 0.5
@@ -214,10 +226,12 @@ def compute_group_metrics(
     b_trend = sign_of_delta(b_delta)
     a_slope = a_delta / step_count
     b_slope = b_delta / step_count
+    # 用两条曲线在该段内的总体变化幅度做归一化，避免不同量纲下斜率差失真。
     scale = max(abs(a_end - a_start), abs(b_end - b_start), 1.0)
     slope_gap_norm = round(abs(a_slope - b_slope) / scale, 4)
     pearson_corr = safe_pearson(normalized["Y_A"], normalized["Y_B"])
     score = compute_similarity_score(a_trend == b_trend, slope_gap_norm, pearson_corr)
+    # A、B 都完全不变时，不把这类“静止段”评成过高相似，压到中档上限。
     if a_trend == 0 and b_trend == 0:
         score = min(score, 0.6)
 
@@ -250,6 +264,7 @@ def analyze_sheet(
     groups = build_groups(normalized, min_group_len=min_group_len)
     records: list[dict[str, object]] = []
     for group_id, group in enumerate(groups, start=1):
+        # 每个 group 都对应原始序列上的一个连续区间，区间内再计算趋势和相似度指标。
         segment = normalized.iloc[int(group["start"]) : int(group["end"]) + 1]
         records.append(compute_group_metrics(segment, sheet_name, group_id))
 
@@ -305,6 +320,7 @@ def plot_sheet_groups(
         end = int(group["end"])
         start_x = normalized.iloc[start]["X"]
         end_x = normalized.iloc[end]["X"]
+        # 底色块表示当前分组覆盖的区间，竖线表示分组起点，文字是 group 编号。
         ax.axvspan(start_x, end_x, color=span_colors[index % len(span_colors)], alpha=0.35, zorder=0)
         if start > 0:
             ax.axvline(start_x, color="#666666", linestyle="--", linewidth=1.0, alpha=0.9)
