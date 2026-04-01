@@ -9,19 +9,31 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 from analyze_trends import (  # noqa: E402
+    analyze_sheet,
     build_groups,
     compute_group_metrics,
+    get_series_labels,
     normalize_columns,
     plot_sheet_groups,
 )
 
 
-def test_normalize_columns_supports_multiple_header_styles():
-    df = pd.DataFrame({"X": [0, 1], "Y-A ": [1, 2], "Y_B": [3, 4]})
+def test_normalize_columns_uses_second_and_third_columns():
+    df = pd.DataFrame({"时间": [0, 1], "压力值": [1, 2], "温度值": [3, 4]})
 
     normalized = normalize_columns(df)
 
     assert list(normalized.columns) == ["X", "Y_A", "Y_B"]
+    assert normalized["Y_A"].tolist() == [1, 2]
+    assert normalized["Y_B"].tolist() == [3, 4]
+
+
+def test_get_series_labels_returns_original_b_c_names():
+    df = pd.DataFrame({"时间": [0, 1], "压力值": [1, 2], "温度值": [3, 4]})
+
+    labels = get_series_labels(df)
+
+    assert labels == ("压力值", "温度值")
 
 
 def test_build_groups_merges_short_segments():
@@ -56,6 +68,21 @@ def test_compute_group_metrics_handles_constant_segment_correlation():
     assert metrics["similarity_level"] == "medium"
 
 
+def test_analyze_sheet_keeps_original_b_c_labels():
+    df = pd.DataFrame(
+        {
+            "时间": [0, 1, 2, 3],
+            "压力值": [5.0, 5.0, 6.0, 7.0],
+            "温度值": [3.0, 3.0, 3.0, 4.0],
+        }
+    )
+
+    details, _ = analyze_sheet(df, "Sheet1", min_group_len=2)
+
+    assert set(details["series_a_name"]) == {"压力值"}
+    assert set(details["series_b_name"]) == {"温度值"}
+
+
 def test_cli_generates_summary_and_csv_outputs(tmp_path: Path):
     excel_path = tmp_path / "input.xlsx"
     output_dir = tmp_path / "out"
@@ -63,16 +90,16 @@ def test_cli_generates_summary_and_csv_outputs(tmp_path: Path):
     with pd.ExcelWriter(excel_path, engine="openpyxl") as writer:
         pd.DataFrame(
             {
-                "X": list(range(6)),
-                "Y_A": [1, 2, 3, 4, 3, 2],
-                "Y_B": [2, 3, 4, 5, 4, 3],
+                "时间": list(range(6)),
+                "压力值": [1, 2, 3, 4, 3, 2],
+                "温度值": [2, 3, 4, 5, 4, 3],
             }
         ).to_excel(writer, sheet_name="Sheet1", index=False)
         pd.DataFrame(
             {
-                "X": list(range(6)),
-                "Y-A ": [5, 4, 3, 2, 3, 4],
-                "Y-B ": [4, 3, 2, 1, 2, 3],
+                "采样点": list(range(6)),
+                "流量": [5, 4, 3, 2, 3, 4],
+                "转速": [4, 3, 2, 1, 2, 3],
             }
         ).to_excel(writer, sheet_name="Sheet2", index=False)
 
@@ -102,9 +129,9 @@ def test_cli_generates_summary_and_csv_outputs(tmp_path: Path):
 def test_plot_sheet_groups_writes_png(tmp_path: Path):
     df = pd.DataFrame(
         {
-            "X": list(range(6)),
-            "Y_A": [1, 2, 3, 4, 3, 2],
-            "Y_B": [2, 3, 4, 5, 4, 3],
+            "时间": list(range(6)),
+            "压力值": [1, 2, 3, 4, 3, 2],
+            "温度值": [2, 3, 4, 5, 4, 3],
         }
     )
 

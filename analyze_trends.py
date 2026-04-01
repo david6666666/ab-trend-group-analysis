@@ -10,32 +10,29 @@ import pandas as pd
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "Noto Sans CJK SC", "Arial Unicode MS", "DejaVu Sans"]
+plt.rcParams["axes.unicode_minus"] = False
+
 
 TREND_LABELS = {1: "\u5347", -1: "\u964d", 0: "\u5e73"}
 SIMILARITY_HIGH_SCORE = 0.75
 SIMILARITY_MEDIUM_SCORE = 0.45
 
 
-def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
-    # Excel 里表头存在 Y_A / Y-A / 带空格等不同写法，这里先统一到固定列名。
-    rename_map: dict[str, str] = {}
-    for column in df.columns:
-        normalized = str(column).strip().replace("-", "_").replace(" ", "")
-        if normalized.lower() == "x":
-            rename_map[column] = "X"
-        elif normalized.upper() == "Y_A":
-            rename_map[column] = "Y_A"
-        elif normalized.upper() == "Y_B":
-            rename_map[column] = "Y_B"
-        else:
-            rename_map[column] = normalized
+def get_series_labels(df: pd.DataFrame) -> tuple[str, str]:
+    if df.shape[1] < 3:
+        raise ValueError("Each sheet must have at least three columns; B and C are required.")
+    return str(df.columns[1]).strip(), str(df.columns[2]).strip()
 
-    normalized_df = df.rename(columns=rename_map).copy()
-    required = {"X", "Y_A", "Y_B"}
-    missing = required - set(normalized_df.columns)
-    if missing:
-        raise ValueError(f"Missing required columns: {sorted(missing)}")
-    return normalized_df.loc[:, ["X", "Y_A", "Y_B"]]
+
+def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    # 不再依赖固定列名，而是把每个 sheet 的 A/B/C 三列分别映射成 X、Y_A、Y_B。
+    # 这样无论原始表头叫“压力值/温度值”还是别的名字，都能自动处理。
+    if df.shape[1] < 3:
+        raise ValueError("Each sheet must have at least three columns; B and C are required.")
+    normalized_df = df.iloc[:, :3].copy()
+    normalized_df.columns = ["X", "Y_A", "Y_B"]
+    return normalized_df
 
 
 def sign_of_delta(value: float) -> int:
@@ -210,9 +207,15 @@ def classify_trend_relation(a_trend: int, b_trend: int) -> str:
 
 
 def compute_group_metrics(
-    segment: pd.DataFrame, sheet_name: str, group_id: int
+    segment: pd.DataFrame,
+    sheet_name: str,
+    group_id: int,
+    series_a_name: str | None = None,
+    series_b_name: str | None = None,
 ) -> dict[str, object]:
     normalized = normalize_columns(segment).reset_index(drop=True)
+    if series_a_name is None or series_b_name is None:
+        series_a_name, series_b_name = get_series_labels(segment)
     a_start = float(normalized.loc[0, "Y_A"])
     a_end = float(normalized.loc[len(normalized) - 1, "Y_A"])
     b_start = float(normalized.loc[0, "Y_B"])
@@ -238,6 +241,8 @@ def compute_group_metrics(
     return {
         "sheet": sheet_name,
         "group_id": group_id,
+        "series_a_name": series_a_name,
+        "series_b_name": series_b_name,
         "start_x": normalized.loc[0, "X"],
         "end_x": normalized.loc[length - 1, "X"],
         "length": length,
@@ -260,13 +265,22 @@ def compute_group_metrics(
 def analyze_sheet(
     df: pd.DataFrame, sheet_name: str, min_group_len: int
 ) -> tuple[pd.DataFrame, dict[str, object]]:
+    series_a_name, series_b_name = get_series_labels(df)
     normalized = normalize_columns(df)
     groups = build_groups(normalized, min_group_len=min_group_len)
     records: list[dict[str, object]] = []
     for group_id, group in enumerate(groups, start=1):
         # 每个 group 都对应原始序列上的一个连续区间，区间内再计算趋势和相似度指标。
         segment = normalized.iloc[int(group["start"]) : int(group["end"]) + 1]
-        records.append(compute_group_metrics(segment, sheet_name, group_id))
+        records.append(
+            compute_group_metrics(
+                segment,
+                sheet_name,
+                group_id,
+                series_a_name=series_a_name,
+                series_b_name=series_b_name,
+            )
+        )
 
     details = pd.DataFrame(records)
     same_direction_mask = details["trend_relation"].isin(["A\u5347B\u5347", "A\u964dB\u964d"])
@@ -308,11 +322,12 @@ def plot_sheet_groups(
     output_path: Path,
 ) -> None:
     normalized = normalize_columns(df).reset_index(drop=True)
+    series_a_name, series_b_name = get_series_labels(df)
     fig, ax = plt.subplots(figsize=(16, 7))
 
     x_values = normalized["X"]
-    ax.plot(x_values, normalized["Y_A"], label="Y_A", color="#1f77b4", linewidth=2.0)
-    ax.plot(x_values, normalized["Y_B"], label="Y_B", color="#d62728", linewidth=2.0)
+    ax.plot(x_values, normalized["Y_A"], label=series_a_name, color="#1f77b4", linewidth=2.0)
+    ax.plot(x_values, normalized["Y_B"], label=series_b_name, color="#d62728", linewidth=2.0)
 
     span_colors = ["#eef4fb", "#fff5e8"]
     for index, group in enumerate(groups):
