@@ -6,6 +6,7 @@ from typing import Iterable
 
 import matplotlib
 import pandas as pd
+from matplotlib.lines import Line2D
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -63,13 +64,11 @@ def fill_zero_signs(signs: Iterable[int]) -> list[int]:
     return filled
 
 
-def build_state_series(df: pd.DataFrame) -> list[tuple[int, int]]:
-    a_signs = fill_zero_signs(sign_of_delta(delta) for delta in df["Y_A"].diff().fillna(0.0))
-    b_signs = fill_zero_signs(sign_of_delta(delta) for delta in df["Y_B"].diff().fillna(0.0))
-    return list(zip(a_signs, b_signs))
+def build_series_state(series: pd.Series) -> list[int]:
+    return fill_zero_signs(sign_of_delta(delta) for delta in series.diff().fillna(0.0))
 
 
-def build_initial_groups(states: list[tuple[int, int]]) -> list[dict[str, object]]:
+def build_initial_groups(states: list[int]) -> list[dict[str, object]]:
     if not states:
         return []
 
@@ -78,10 +77,10 @@ def build_initial_groups(states: list[tuple[int, int]]) -> list[dict[str, object
     current_state = states[0]
     for index in range(1, len(states)):
         if states[index] != current_state:
-            groups.append({"start": start, "end": index - 1, "state": current_state})
+            groups.append({"start": start, "end": index - 1, "trend": current_state})
             start = index
             current_state = states[index]
-    groups.append({"start": start, "end": len(states) - 1, "state": current_state})
+    groups.append({"start": start, "end": len(states) - 1, "trend": current_state})
     return groups
 
 
@@ -111,7 +110,7 @@ def merge_short_groups(
             previous = next_groups[-1] if next_groups else None
             following = dict(merged[index + 1]) if index + 1 < len(merged) else None
 
-            if previous and following and previous["state"] == following["state"]:
+            if previous and following and previous["trend"] == following["trend"]:
                 previous["end"] = following["end"]
                 index += 2
                 changed = True
@@ -148,11 +147,60 @@ def merge_short_groups(
     return merged
 
 
+def build_series_groups(series: pd.Series, min_group_len: int = 3) -> list[dict[str, object]]:
+    initial_groups = build_initial_groups(build_series_state(series.astype(float)))
+    merged_groups = merge_short_groups(initial_groups, min_group_len=min_group_len)
+    numbered_groups = []
+    for group_id, group in enumerate(merged_groups, start=1):
+        item = dict(group)
+        item["group_id"] = group_id
+        numbered_groups.append(item)
+    return numbered_groups
+
+
+def locate_group(index: int, groups: list[dict[str, object]]) -> dict[str, object]:
+    for group in groups:
+        if int(group["start"]) <= index <= int(group["end"]):
+            return group
+    raise ValueError(f"Index {index} not covered by groups")
+
+
+def align_groups(
+    a_groups: list[dict[str, object]],
+    b_groups: list[dict[str, object]],
+    length: int,
+) -> list[dict[str, object]]:
+    boundaries = {0, length}
+    boundaries.update(int(group["start"]) for group in a_groups)
+    boundaries.update(int(group["start"]) for group in b_groups)
+    sorted_boundaries = sorted(boundaries)
+
+    aligned: list[dict[str, object]] = []
+    for index in range(len(sorted_boundaries) - 1):
+        start = sorted_boundaries[index]
+        end = sorted_boundaries[index + 1] - 1
+        if start > end:
+            continue
+        a_group = locate_group(start, a_groups)
+        b_group = locate_group(start, b_groups)
+        aligned.append(
+            {
+                "start": start,
+                "end": end,
+                "a_group_id": int(a_group["group_id"]),
+                "b_group_id": int(b_group["group_id"]),
+                "a_group_trend": int(a_group["trend"]),
+                "b_group_trend": int(b_group["trend"]),
+            }
+        )
+    return aligned
+
+
 def build_groups(df: pd.DataFrame, min_group_len: int = 3) -> list[dict[str, object]]:
     normalized = normalize_columns(df)
-    states = build_state_series(normalized)
-    initial_groups = build_initial_groups(states)
-    return merge_short_groups(initial_groups, min_group_len=min_group_len)
+    a_groups = build_series_groups(normalized["Y_A"], min_group_len=min_group_len)
+    b_groups = build_series_groups(normalized["Y_B"], min_group_len=min_group_len)
+    return align_groups(a_groups, b_groups, len(normalized))
 
 
 def safe_pearson(a: pd.Series, b: pd.Series) -> float | None:
@@ -198,7 +246,11 @@ def classify_trend_relation(a_trend: int, b_trend: int) -> str:
 
 
 def compute_group_metrics(
-    segment: pd.DataFrame, sheet_name: str, group_id: int
+    segment: pd.DataFrame,
+    sheet_name: str,
+    group_id: int,
+    a_group_id: int | None = None,
+    b_group_id: int | None = None,
 ) -> dict[str, object]:
     normalized = normalize_columns(segment).reset_index(drop=True)
     a_start = float(normalized.loc[0, "Y_A"])
@@ -224,6 +276,8 @@ def compute_group_metrics(
     return {
         "sheet": sheet_name,
         "group_id": group_id,
+        "A_group_id": a_group_id,
+        "B_group_id": b_group_id,
         "start_x": normalized.loc[0, "X"],
         "end_x": normalized.loc[length - 1, "X"],
         "length": length,
@@ -247,11 +301,22 @@ def analyze_sheet(
     df: pd.DataFrame, sheet_name: str, min_group_len: int
 ) -> tuple[pd.DataFrame, dict[str, object]]:
     normalized = normalize_columns(df)
-    groups = build_groups(normalized, min_group_len=min_group_len)
+    a_groups = build_series_groups(normalized["Y_A"], min_group_len=min_group_len)
+    b_groups = build_series_groups(normalized["Y_B"], min_group_len=min_group_len)
+    aligned_groups = align_groups(a_groups, b_groups, len(normalized))
+
     records: list[dict[str, object]] = []
-    for group_id, group in enumerate(groups, start=1):
+    for group_id, group in enumerate(aligned_groups, start=1):
         segment = normalized.iloc[int(group["start"]) : int(group["end"]) + 1]
-        records.append(compute_group_metrics(segment, sheet_name, group_id))
+        records.append(
+            compute_group_metrics(
+                segment,
+                sheet_name,
+                group_id,
+                a_group_id=int(group["a_group_id"]),
+                b_group_id=int(group["b_group_id"]),
+            )
+        )
 
     details = pd.DataFrame(records)
     same_direction_mask = details["trend_relation"].isin(["A\u5347B\u5347", "A\u964dB\u964d"])
@@ -259,7 +324,9 @@ def analyze_sheet(
     low_group = details.sort_values("similarity_score", ascending=True).iloc[0]
     summary = {
         "sheet": sheet_name,
-        "group_count": int(len(details)),
+        "aligned_group_count": int(len(details)),
+        "A_group_count": int(len(a_groups)),
+        "B_group_count": int(len(b_groups)),
         "same_direction_groups": int(same_direction_mask.sum()),
         "opposite_direction_groups": int((~same_direction_mask).sum()),
         "high_count": int((details["similarity_level"] == "high").sum()),
@@ -286,49 +353,93 @@ def sanitize_sheet_name(sheet_name: str) -> str:
     return "".join(safe).strip("_") or "sheet"
 
 
-def plot_sheet_groups(
+def plot_single_series_groups(
     df: pd.DataFrame,
     groups: list[dict[str, object]],
     sheet_name: str,
     output_path: Path,
+    series_name: str,
+    series_groups: list[dict[str, object]],
+    boundary_color: str,
 ) -> None:
     normalized = normalize_columns(df).reset_index(drop=True)
     fig, ax = plt.subplots(figsize=(16, 7))
 
     x_values = normalized["X"]
-    ax.plot(x_values, normalized["Y_A"], label="Y_A", color="#1f77b4", linewidth=2.0)
-    ax.plot(x_values, normalized["Y_B"], label="Y_B", color="#d62728", linewidth=2.0)
+    ax.plot(x_values, normalized[series_name], label=series_name, color=boundary_color, linewidth=2.2)
 
     span_colors = ["#eef4fb", "#fff5e8"]
     for index, group in enumerate(groups):
-        start = int(group["start"])
-        end = int(group["end"])
-        start_x = normalized.iloc[start]["X"]
-        end_x = normalized.iloc[end]["X"]
-        ax.axvspan(start_x, end_x, color=span_colors[index % len(span_colors)], alpha=0.35, zorder=0)
-        if start > 0:
-            ax.axvline(start_x, color="#666666", linestyle="--", linewidth=1.0, alpha=0.9)
+        start_x = normalized.iloc[int(group["start"])]["X"]
+        end_x = normalized.iloc[int(group["end"])]["X"]
+        ax.axvspan(start_x, end_x, color=span_colors[index % 2], alpha=0.22, zorder=0)
         midpoint = (start_x + end_x) / 2
         ax.text(
             midpoint,
             1.01,
-            f"G{index + 1}",
+            f"S{index + 1}",
             transform=ax.get_xaxis_transform(),
             ha="center",
             va="bottom",
             fontsize=8,
-            color="#444444",
+            color="#333333",
         )
 
-    ax.set_title(f"{sheet_name} Trend Groups")
+    for group in series_groups:
+        start = int(group["start"])
+        if start > 0:
+            start_x = normalized.iloc[start]["X"]
+            ax.axvline(start_x, color=boundary_color, linestyle="--", linewidth=1.4, alpha=0.95)
+
+    ax.set_title(f"{sheet_name} {series_name} Groups")
     ax.set_xlabel("X")
     ax.set_ylabel("Value")
     ax.grid(True, axis="y", linestyle=":", alpha=0.35)
-    ax.legend(loc="upper right")
+    legend_items = [
+        Line2D([0], [0], color=boundary_color, linewidth=2.2, label=series_name),
+        Line2D([0], [0], color=boundary_color, linestyle="--", linewidth=1.4, label=f"{series_name} group boundary"),
+        Line2D([0], [0], color="#999999", linewidth=8, alpha=0.22, label="Aligned analysis segment"),
+    ]
+    ax.legend(handles=legend_items, loc="upper right")
     fig.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=180, bbox_inches="tight")
     plt.close(fig)
+
+
+def plot_sheet_groups(
+    df: pd.DataFrame,
+    groups: list[dict[str, object]],
+    sheet_name: str,
+    output_dir: Path,
+    a_groups: list[dict[str, object]] | None = None,
+    b_groups: list[dict[str, object]] | None = None,
+) -> None:
+    normalized = normalize_columns(df).reset_index(drop=True)
+    if a_groups is None:
+        a_groups = build_series_groups(normalized["Y_A"])
+    if b_groups is None:
+        b_groups = build_series_groups(normalized["Y_B"])
+
+    safe_name = sanitize_sheet_name(sheet_name)
+    plot_single_series_groups(
+        normalized,
+        groups,
+        sheet_name,
+        output_dir / f"{safe_name}_Y_A_groups.png",
+        "Y_A",
+        a_groups,
+        "#1f77b4",
+    )
+    plot_single_series_groups(
+        normalized,
+        groups,
+        sheet_name,
+        output_dir / f"{safe_name}_Y_B_groups.png",
+        "Y_B",
+        b_groups,
+        "#d62728",
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -351,7 +462,9 @@ def parse_args() -> argparse.Namespace:
 def format_summary(summary: dict[str, object]) -> str:
     return (
         f"Sheet: {summary['sheet']}\n"
-        f"  Groups: {summary['group_count']}\n"
+        f"  A groups: {summary['A_group_count']}\n"
+        f"  B groups: {summary['B_group_count']}\n"
+        f"  Aligned groups: {summary['aligned_group_count']}\n"
         f"  Same direction: {summary['same_direction_groups']}\n"
         f"  Opposite direction: {summary['opposite_direction_groups']}\n"
         f"  Similarity levels: high={summary['high_count']}, "
@@ -375,13 +488,18 @@ def main() -> int:
     all_summaries: list[dict[str, object]] = []
     for sheet_name in excel.sheet_names:
         sheet_df = pd.read_excel(input_path, sheet_name=sheet_name)
-        details, summary = analyze_sheet(sheet_df, sheet_name, min_group_len=args.min_group_len)
-        groups = build_groups(sheet_df, min_group_len=args.min_group_len)
+        normalized = normalize_columns(sheet_df)
+        a_groups = build_series_groups(normalized["Y_A"], min_group_len=args.min_group_len)
+        b_groups = build_series_groups(normalized["Y_B"], min_group_len=args.min_group_len)
+        aligned_groups = align_groups(a_groups, b_groups, len(normalized))
+        details, summary = analyze_sheet(normalized, sheet_name, min_group_len=args.min_group_len)
         plot_sheet_groups(
-            sheet_df,
-            groups,
+            normalized,
+            aligned_groups,
             sheet_name,
-            output_dir / f"{sanitize_sheet_name(sheet_name)}_groups.png",
+            output_dir,
+            a_groups=a_groups,
+            b_groups=b_groups,
         )
         all_details.append(details)
         all_summaries.append(summary)
