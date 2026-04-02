@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT))
 from analyze_trends import (  # noqa: E402
     analyze_sheet,
     build_groups,
+    compute_jump_thresholds,
     compute_group_metrics,
     get_series_labels,
     normalize_columns,
@@ -52,6 +53,39 @@ def test_build_groups_merges_short_segments():
     assert groups[0]["end"] == len(df) - 1
 
 
+def test_build_groups_splits_large_jump_inside_same_trend():
+    df = pd.DataFrame(
+        {
+            "时间": list(range(12)),
+            "压力值": [1, 2, 3, 4, 5, 6, 16, 17, 18, 19, 20, 21],
+            "温度值": [2, 3, 4, 5, 6, 7, 17, 18, 19, 20, 21, 22],
+        }
+    )
+
+    groups = build_groups(df, min_group_len=3)
+
+    assert len(groups) == 2
+    assert groups[0]["start"] == 0
+    assert groups[0]["end"] == 5
+    assert groups[1]["start"] == 6
+    assert groups[1]["end"] == 11
+
+
+def test_compute_jump_thresholds_uses_sheet_local_distribution():
+    df = pd.DataFrame(
+        {
+            "时间": list(range(8)),
+            "压力值": [1, 2, 3, 4, 5, 15, 16, 17],
+            "温度值": [2, 3, 4, 5, 6, 16, 17, 18],
+        }
+    )
+
+    thresholds = compute_jump_thresholds(df)
+
+    assert thresholds["Y_A"] > 1
+    assert thresholds["Y_B"] > 1
+
+
 def test_compute_group_metrics_handles_constant_segment_correlation():
     df = pd.DataFrame(
         {
@@ -81,6 +115,22 @@ def test_analyze_sheet_keeps_original_b_c_labels():
 
     assert set(details["series_a_name"]) == {"压力值"}
     assert set(details["series_b_name"]) == {"温度值"}
+
+
+def test_analyze_sheet_marks_jump_split_in_details():
+    df = pd.DataFrame(
+        {
+            "时间": list(range(12)),
+            "压力值": [1, 2, 3, 4, 5, 6, 16, 17, 18, 19, 20, 21],
+            "温度值": [2, 3, 4, 5, 6, 7, 17, 18, 19, 20, 21, 22],
+        }
+    )
+
+    details, _ = analyze_sheet(df, "Sheet1", min_group_len=3)
+
+    assert len(details) == 2
+    assert details.iloc[0]["end_x"] == 5
+    assert details.iloc[1]["start_x"] == 6
 
 
 def test_cli_generates_summary_and_csv_outputs(tmp_path: Path):

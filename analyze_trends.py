@@ -19,6 +19,25 @@ SIMILARITY_HIGH_SCORE = 0.75
 SIMILARITY_MEDIUM_SCORE = 0.45
 
 
+def compute_jump_thresholds(df: pd.DataFrame) -> dict[str, float]:
+    normalized = normalize_columns(df)
+    thresholds: dict[str, float] = {}
+    for column in ["Y_A", "Y_B"]:
+        diffs = normalized[column].astype(float).diff().abs().dropna()
+        if diffs.empty:
+            thresholds[column] = float("inf")
+            continue
+        q25 = float(diffs.quantile(0.25))
+        q50 = float(diffs.quantile(0.50))
+        q75 = float(diffs.quantile(0.75))
+        q95 = float(diffs.quantile(0.95))
+        iqr = q75 - q25
+        # 跳变阈值按当前 sheet 当前列自己的波动水平自动计算，
+        # 只把明显高于日常波动的点当成“组内跳变”。
+        thresholds[column] = max(q95, q50 + 3 * iqr)
+    return thresholds
+
+
 def get_series_labels(df: pd.DataFrame) -> tuple[str, str]:
     if df.shape[1] < 3:
         raise ValueError("Each sheet must have at least three columns; B and C are required.")
@@ -154,11 +173,43 @@ def merge_short_groups(
     return merged
 
 
+def split_groups_on_jumps(
+    groups: list[dict[str, object]],
+    df: pd.DataFrame,
+    jump_thresholds: dict[str, float],
+) -> list[dict[str, object]]:
+    normalized = normalize_columns(df)
+    refined_groups: list[dict[str, object]] = []
+
+    for group in groups:
+        start = int(group["start"])
+        end = int(group["end"])
+        split_points = [start]
+        for index in range(max(start + 1, 1), end + 1):
+            a_jump = abs(float(normalized.iloc[index]["Y_A"]) - float(normalized.iloc[index - 1]["Y_A"])) > jump_thresholds["Y_A"]
+            b_jump = abs(float(normalized.iloc[index]["Y_B"]) - float(normalized.iloc[index - 1]["Y_B"])) > jump_thresholds["Y_B"]
+            if a_jump or b_jump:
+                split_points.append(index)
+
+        split_points.append(end + 1)
+        for left, right in zip(split_points, split_points[1:]):
+            refined_groups.append(
+                {
+                    "start": left,
+                    "end": right - 1,
+                    "state": group["state"],
+                }
+            )
+    return refined_groups
+
+
 def build_groups(df: pd.DataFrame, min_group_len: int = 3) -> list[dict[str, object]]:
     normalized = normalize_columns(df)
     states = build_state_series(normalized)
     initial_groups = build_initial_groups(states)
-    return merge_short_groups(initial_groups, min_group_len=min_group_len)
+    merged_groups = merge_short_groups(initial_groups, min_group_len=min_group_len)
+    jump_thresholds = compute_jump_thresholds(normalized)
+    return split_groups_on_jumps(merged_groups, normalized, jump_thresholds)
 
 
 def safe_pearson(a: pd.Series, b: pd.Series) -> float | None:
