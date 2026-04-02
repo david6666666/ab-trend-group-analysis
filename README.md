@@ -1,41 +1,273 @@
-# Trend Group A/B Analysis
+# Excel 趋势分组与 A/B 相似度分析说明
 
-This repository contains a small analysis tool for splitting paired `Y_A` / `Y_B` time series into trend groups, measuring A/B similarity inside each group, and exporting both tabular results and visualization charts.
+这个项目是一个面向 Excel 时序数据的小工具。它会自动遍历工作簿里的每个 sheet，默认把每个 sheet 的 **B 列** 和 **C 列** 当成两条需要比较的序列，用它们各自原本的列名来展示结果，然后输出：
 
-## Files
+- 每个分组的详细分析表
+- 每个 sheet 的汇总表
+- 每个 sheet 的趋势分组图
 
-- `analyze_trends.py`: main script for reading Excel, grouping trends, scoring similarity, and generating outputs.
-- `test_analyze_trends.py`: regression tests for normalization, grouping, scoring, CLI export, and plot generation.
-- `数据.xlsx`: source workbook used in this analysis.
-- `output/`: generated CSV summaries and per-sheet PNG charts.
+如果你把自己当成“小白”，可以把这个工具理解成：
 
-## What the script does
+1. 先看两条曲线是怎么涨、怎么跌的
+2. 把走势差不多的一段一段切出来
+3. 再判断每一段里两条曲线到底像不像
 
-For each sheet in the Excel workbook:
+## 一、这个工具到底在解决什么问题
 
-1. Normalizes headers so both `Y_A/Y_B` and `Y-A /Y-B ` styles are accepted.
-2. Computes first-order differences for A and B.
-3. Treats flat points as continuing the nearest non-zero trend.
-4. Splits the sequence whenever the `(A trend, B trend)` state changes.
-5. Merges short groups shorter than `--min-group-len` into adjacent major trends.
-6. Computes, for each group:
-   - trend relation such as `A升B升`, `A降B降`, `A升B降`, `A降B升`
-   - start/end values
-   - slope for A and B
-   - normalized slope gap
-   - Pearson correlation
-   - similarity score and `high/medium/low` label
-7. Writes summary CSVs and group boundary charts.
+很多 Excel 数据都长这样：
 
-## Usage
+- A 列：时间、采样点、序号
+- B 列：一条指标曲线
+- C 列：另一条指标曲线
 
-Install dependencies temporarily with `uv` and run:
+你真正想知道的通常不是“某个点的数值是多少”，而是：
+
+- 这两条曲线是不是一起涨、一起跌
+- 哪些时间段里它们走势接近
+- 哪些时间段里它们明显背离
+- 整个 sheet 看下来，它们整体相似度高不高
+
+这个脚本做的事情，就是把“肉眼看折线图”的过程自动化。
+
+## 二、整体方案原理
+
+### 1. 自动遍历所有 sheet
+
+脚本会读取你传入的 Excel 文件，然后把里面的每个 sheet 都处理一遍，不需要手工指定 sheet 名。
+
+### 2. 每个 sheet 自动取 B 列和 C 列
+
+脚本不会再死盯 `Y_A`、`Y_B` 这两个固定列名，而是直接按列位置取：
+
+- 第 1 列作为横轴 `X`
+- 第 2 列，也就是 Excel 的 B 列，作为第一条分析序列
+- 第 3 列，也就是 Excel 的 C 列，作为第二条分析序列
+
+同时：
+
+- 计算时内部会统一映射成 `X / Y_A / Y_B`
+- 对外展示时，仍然保留 B 列、C 列原始表头
+
+也就是说，如果某个 sheet 的 B/C 列叫：
+
+- `压力值` / `温度值`
+
+那输出结果里就会记住它们叫 `压力值` 和 `温度值`。
+
+### 3. 按“趋势变化”切分 group
+
+脚本不是按固定行数分组，也不是按数值大小硬切，而是按“走势是否发生变化”来切分。
+
+简单理解：
+
+- 当前这一段如果一直在涨，就算一组
+- 当前这一段如果一直在跌，就算一组
+- 如果前面在涨，后面开始跌，就从变化点切一刀
+
+这样分组更符合人看曲线的习惯。
+
+### 4. 每个 group 内再算相似度
+
+分完组以后，脚本会在每个 group 里判断：
+
+- B 列这条曲线在这一段是上升、下降还是不变
+- C 列这条曲线在这一段是上升、下降还是不变
+- 两者方向是否一致
+- 两者斜率是否接近
+- 两者在这一段内的形状相关性如何
+
+最后把这些信息综合成一个相似度分数，再给一个等级：
+
+- `high`
+- `medium`
+- `low`
+
+## 三、算法原理
+
+这一部分是“代码具体怎么做”的解释。
+
+### 1. 先做一阶差分，判断趋势方向
+
+所谓“一阶差分”，就是看相邻两个点的变化量：
+
+- 后一个点比前一个点大：记为上升
+- 后一个点比前一个点小：记为下降
+- 两个点相等：记为不变
+
+例如：
+
+```text
+10, 12, 12, 15, 14
+```
+
+它的变化方向就是：
+
+```text
+升, 平, 升, 降
+```
+
+### 2. 对“平”的点做趋势继承
+
+真实数据里经常会有一些持平点。如果直接把“平”单独当成一种状态，group 会被切得非常碎，结果会很难看。
+
+所以脚本做了一个简化处理：
+
+- 如果某个点是“平”，就优先继承它前面最近的非零趋势
+- 如果开头就是连续“平”，再从后面找趋势补上
+
+这样做的目的，是把短暂持平视作原趋势的延续，减少无意义碎片。
+
+### 3. 用联合状态切 group
+
+脚本不是只看 B 列，也不是只看 C 列，而是同时看这两列的趋势组合。
+
+例如：
+
+- B 列上升，C 列下降，状态记作 `(升, 降)`
+- B 列下降，C 列下降，状态记作 `(降, 降)`
+
+只要这个组合状态发生变化，就切出一个新的 group。
+
+所以 group 的本质是：
+
+“这一段里，B/C 两条曲线的趋势关系保持不变”
+
+### 4. 短 group 会自动合并
+
+如果完全照原始状态切，有些 group 可能只有 1 个点或 2 个点，这通常是噪声，不太适合直接分析。
+
+所以脚本有一个参数：
+
+- `--min-group-len`
+
+默认是 `3`，意思是：
+
+- 少于 3 个点的 group，尽量并入前后更合理的大段
+
+合并规则大致是：
+
+- 如果前后两段状态一样，就直接桥接合并
+- 如果前后不同，就优先并给更长的那一段
+- 如果只有一边有邻居，就并到那一边
+
+### 5. 相似度是怎么计算的
+
+每个 group 的相似度不是单靠一个指标决定，而是三部分组合：
+
+#### 第一部分：趋势方向是否一致
+
+比如：
+
+- 一起上升
+- 一起下降
+
+这类通常更相似。
+
+如果一个升一个降，方向上就已经明显不一致。
+
+#### 第二部分：斜率差是否接近
+
+即使两条曲线都在上升，也可能：
+
+- 一条升得很快
+- 一条升得很慢
+
+脚本会比较两者在这一组内的平均斜率差，并做归一化处理，避免因为量纲不同导致误判。
+
+#### 第三部分：Pearson 相关系数
+
+这个指标衡量的是：
+
+- 两条曲线在这一段内的形状是否同步
+
+如果一个点多一个点少，但整体起伏方向非常一致，相关系数通常会比较高。
+
+### 6. 最终相似度分数
+
+脚本把上面三部分按权重组合成一个总分：
+
+- 方向一致性：权重最高
+- 斜率接近程度：其次
+- 相关系数：辅助判断
+
+最后再把分数映射成：
+
+- `high`
+- `medium`
+- `low`
+
+## 四、输出文件分别怎么看
+
+### 1. `output/group_details.csv`
+
+这是最详细的结果表，一行代表一个 group。
+
+你可以重点看这些列：
+
+- `sheet`：来自哪个 sheet
+- `series_a_name` / `series_b_name`：当前 sheet 的 B/C 列原始名字
+- `start_x` / `end_x`：这个 group 的起止位置
+- `A_trend` / `B_trend`：这一段里两列各自是升、降还是平
+- `trend_relation`：两列关系，例如 `A升B降`
+- `A_slope` / `B_slope`：两条曲线这一段的平均斜率
+- `pearson_corr`：形状相关性
+- `similarity_score`：综合相似度分数
+- `similarity_level`：综合等级
+
+### 2. `output/sheet_summary.csv`
+
+这是按 sheet 汇总的结果。
+
+你可以用它快速看：
+
+- 这个 sheet 一共被切成多少组
+- 同向组多少，反向组多少
+- 相似度高、中、低各有多少
+- 最像的是哪一组
+- 最不像的是哪一组
+
+### 3. `output/<sheet>_groups.png`
+
+这是每个 sheet 的可视化图。
+
+图上一般有三类信息：
+
+- 蓝线：B 列对应的曲线
+- 红线：C 列对应的曲线
+- 底色块和分界线：group 切分结果
+
+如果你想直观看算法切得是否合理，优先看这个图。
+
+## 五、适合什么场景
+
+这个工具适合：
+
+- 传感器双曲线对比
+- 两个指标的趋势一致性分析
+- Excel 里按阶段比较走势
+- 想先做一个可解释的趋势分析，而不是直接上复杂机器学习
+
+## 六、不适合什么场景
+
+它不太适合：
+
+- 列特别多、想一次分析十几列
+- 数据非常嘈杂，且需要非常严格的统计分段
+- 需要做更复杂的时序距离算法，例如 DTW、频域分析等
+
+这个脚本的定位不是“最复杂的时序算法”，而是：
+
+**规则清晰、容易解释、便于人工复核**
+
+## 七、运行方式
+
+建议使用 `uv` 临时安装依赖并运行：
 
 ```powershell
 uv run --with pandas --with openpyxl --with matplotlib python .\analyze_trends.py --input .\数据.xlsx --output-dir .\output
 ```
 
-Optional arguments:
+如果你希望把过短的小组进一步合并，可以调大：
 
 ```powershell
 uv run --with pandas --with openpyxl --with matplotlib python .\analyze_trends.py `
@@ -44,24 +276,14 @@ uv run --with pandas --with openpyxl --with matplotlib python .\analyze_trends.p
   --min-group-len 4
 ```
 
-## Outputs
-
-After running, the script generates:
-
-- `output/group_details.csv`: one row per trend group
-- `output/sheet_summary.csv`: one row per sheet summary
-- `output/Sheet1_groups.png`, `output/Sheet2_groups.png`, ...: original A/B curves with group boundaries and shaded segments
-
-## Test
-
-Run tests with:
+## 八、测试方式
 
 ```powershell
 uv run --with pandas --with openpyxl --with matplotlib --with pytest python -m pytest test_analyze_trends.py -q
 ```
 
-## Notes
+## 九、给小白的结论
 
-- The grouping strategy is heuristic and designed for readability rather than globally optimal segmentation.
-- Increasing `--min-group-len` will reduce short-term fragmentation and usually produce fewer, longer groups.
-- The output charts are intended to help review whether the split boundaries are reasonable before changing thresholds.
+如果你只想记住一句话，可以记这句：
+
+**这个工具会自动遍历 Excel 的所有 sheet，把每个 sheet 的 B/C 两列按走势切成一段一段，再判断每一段里两列到底像不像。**
