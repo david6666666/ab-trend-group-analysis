@@ -225,16 +225,31 @@ def safe_pearson(a: pd.Series, b: pd.Series) -> float | None:
 
 def compute_similarity_score(
     direction_same: bool,
+    direction_relative_error: float,
     slope_gap_norm: float,
     pearson_corr: float | None,
 ) -> float:
-    # 相似度由三部分组成：
-    # 方向是否一致 + 斜率是否接近 + 组内形状相关性。
-    # 权重偏向“趋势方向”和“斜率差”，相关系数作为辅助解释。
+    # 相似度由四部分组成：
+    # 方向是否一致 + 方向变化幅度相对误差 + 斜率是否接近 + 组内形状相关性。
+    # 权重偏向“趋势方向”和“方向幅度/斜率差”，相关系数作为辅助解释。
     direction_score = 1.0 if direction_same else 0.0
+    relative_error_score = max(0.0, 1.0 - direction_relative_error)
     slope_score = max(0.0, 1.0 - slope_gap_norm)
     corr_score = ((pearson_corr + 1.0) / 2.0) if pearson_corr is not None else 0.5
-    return round(0.45 * direction_score + 0.35 * slope_score + 0.20 * corr_score, 4)
+    return round(
+        0.40 * direction_score
+        + 0.25 * relative_error_score
+        + 0.25 * slope_score
+        + 0.10 * corr_score,
+        4,
+    )
+
+
+def compute_direction_relative_error(a_delta: float, b_delta: float) -> float:
+    if a_delta == 0 and b_delta == 0:
+        return 0.0
+    scale = max(abs(a_delta), abs(b_delta))
+    return round(min(abs(a_delta - b_delta) / scale, 1.0), 4)
 
 
 def classify_similarity_level(score: float) -> str:
@@ -283,8 +298,14 @@ def compute_group_metrics(
     # 用两条曲线在该段内的总体变化幅度做归一化，避免不同量纲下斜率差失真。
     scale = max(abs(a_end - a_start), abs(b_end - b_start), 1.0)
     slope_gap_norm = round(abs(a_slope - b_slope) / scale, 4)
+    direction_relative_error = compute_direction_relative_error(a_delta, b_delta)
     pearson_corr = safe_pearson(normalized["Y_A"], normalized["Y_B"])
-    score = compute_similarity_score(a_trend == b_trend, slope_gap_norm, pearson_corr)
+    score = compute_similarity_score(
+        a_trend == b_trend,
+        direction_relative_error,
+        slope_gap_norm,
+        pearson_corr,
+    )
     # A、B 都完全不变时，不把这类“静止段”评成过高相似，压到中档上限。
     if a_trend == 0 and b_trend == 0:
         score = min(score, 0.6)
@@ -306,6 +327,7 @@ def compute_group_metrics(
         "B_end": b_end,
         "A_slope": round(a_slope, 4),
         "B_slope": round(b_slope, 4),
+        "direction_relative_error": direction_relative_error,
         "slope_gap_norm": slope_gap_norm,
         "pearson_corr": None if pearson_corr is None else round(pearson_corr, 4),
         "similarity_score": score,

@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT))
 from analyze_trends import (  # noqa: E402
     analyze_sheet,
     build_groups,
+    compute_similarity_score,
     compute_jump_thresholds,
     compute_group_metrics,
     get_series_labels,
@@ -100,6 +101,29 @@ def test_compute_group_metrics_handles_constant_segment_correlation():
     assert metrics["trend_relation"] == "A\u5e73B\u5e73"
     assert metrics["pearson_corr"] is None
     assert metrics["similarity_level"] == "medium"
+
+
+def test_compute_group_metrics_reports_direction_relative_error():
+    df = pd.DataFrame(
+        {
+            "X": [0, 1, 2],
+            "Y_A": [0.0, 50.0, 100.0],
+            "Y_B": [0.0, 12.5, 25.0],
+        }
+    )
+
+    metrics = compute_group_metrics(df, "Sheet1", 1)
+
+    assert metrics["trend_relation"] == "A\u5347B\u5347"
+    assert metrics["direction_relative_error"] == 0.75
+
+
+def test_similarity_score_penalizes_direction_relative_error():
+    matched = compute_similarity_score(True, 0.0, 0.0, 1.0)
+    mismatched_scale = compute_similarity_score(True, 0.75, 0.0, 1.0)
+
+    assert matched == 1.0
+    assert mismatched_scale < matched
 
 
 def test_analyze_sheet_keeps_original_b_c_labels():
