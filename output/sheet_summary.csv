@@ -1,3 +1,3 @@
 ﻿sheet,group_count,same_direction_groups,opposite_direction_groups,high_count,medium_count,low_count,avg_similarity_score,top_group_id,top_group_relation,top_group_score,low_group_id,low_group_relation,low_group_score
-Sheet1,34,13,21,13,5,16,0.5467,31,A降B降,0.9959,9,A降B平,0.175
-Sheet2,26,8,18,5,11,10,0.5299,16,A升B升,1.0,11,A升B降,0.0692
+Sheet1,20,10,10,10,1,9,0.5749,15,A降B降,0.9736,1,A升B降,0.1848
+Sheet2,20,10,10,8,4,8,0.5903,13,A升B升,1.0,10,A升B降,0.0692

@@ -168,7 +168,19 @@
 - 如果前后不同，就优先并给更长的那一段
 - 如果只有一边有邻居，就并到那一边
 
-### 5. 同趋势内的“明显跳变”怎么判断
+### 5. 最终 group 数量会控制在 20 个以内
+
+短 group 合并和跳变切分完成后，脚本还会做一次最终数量控制。
+
+默认每个 sheet 最多保留 `20` 个 group：
+
+- 如果最终 group 数量不超过 20，就不额外处理
+- 如果超过 20，就优先合并相邻且状态一致、或者长度较短的相邻 group
+- 合并后仍然覆盖完整原始区间，不会丢掉数据点
+
+这个上限可以用 `--max-groups` 调整。
+
+### 6. 同趋势内的“明显跳变”怎么判断
 
 脚本不会写死一个固定跳变阈值，因为不同 sheet、不同列的数据量纲可能完全不同。
 
@@ -197,7 +209,7 @@ max(95分位数, 中位数 + 3 * IQR)
 
 这样可以减少把正常波动误切成很多小 group。
 
-### 6. 相似度是怎么计算的
+### 7. 相似度是怎么计算的
 
 每个 group 的相似度不是单靠一个指标决定，而是四部分组合：
 
@@ -240,7 +252,7 @@ max(95分位数, 中位数 + 3 * IQR)
 
 如果一个点多一个点少，但整体起伏方向非常一致，相关系数通常会比较高。
 
-### 7. 最终相似度分数
+### 8. 最终相似度分数
 
 脚本把上面四部分按权重组合成一个总分：
 
@@ -336,6 +348,15 @@ uv run --with pandas --with openpyxl --with matplotlib python .\analyze_trends.p
   --min-group-len 4
 ```
 
+如果你希望调整每个 sheet 的最大 group 数，可以设置：
+
+```powershell
+uv run --with pandas --with openpyxl --with matplotlib python .\analyze_trends.py `
+  --input .\数据.xlsx `
+  --output-dir .\output `
+  --max-groups 20
+```
+
 ## 八、测试方式
 
 ```powershell
@@ -346,4 +367,4 @@ uv run --with pandas --with openpyxl --with matplotlib --with pytest python -m p
 
 如果你只想记住一句话，可以记这句：
 
-**这个工具会自动遍历 Excel 的所有 sheet，把每个 sheet 的 B/C 两列先按趋势切段，再把同趋势里的明显跳变单独切开，最后判断每一段里两列到底像不像。**
+**这个工具会自动遍历 Excel 的所有 sheet，把每个 sheet 的 B/C 两列先按趋势切段，再把同趋势里的明显跳变单独切开，并把每个 sheet 的最终分组控制在 20 个以内，最后判断每一段里两列到底像不像。**

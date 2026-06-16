@@ -17,6 +17,7 @@ plt.rcParams["axes.unicode_minus"] = False
 TREND_LABELS = {1: "\u5347", -1: "\u964d", 0: "\u5e73"}
 SIMILARITY_HIGH_SCORE = 0.75
 SIMILARITY_MEDIUM_SCORE = 0.45
+MAX_GROUP_COUNT = 20
 
 
 def compute_jump_thresholds(df: pd.DataFrame) -> dict[str, float]:
@@ -203,13 +204,41 @@ def split_groups_on_jumps(
     return refined_groups
 
 
-def build_groups(df: pd.DataFrame, min_group_len: int = 3) -> list[dict[str, object]]:
+def merge_groups_to_max_count(
+    groups: list[dict[str, object]], max_group_count: int
+) -> list[dict[str, object]]:
+    if max_group_count <= 0:
+        raise ValueError("max_group_count must be greater than 0.")
+
+    merged = [dict(group) for group in groups]
+    while len(merged) > max_group_count:
+        best_index = min(
+            range(len(merged) - 1),
+            key=lambda index: (
+                merged[index]["state"] != merged[index + 1]["state"],
+                group_length(merged[index]) + group_length(merged[index + 1]),
+                index,
+            ),
+        )
+        merged[best_index]["end"] = merged[best_index + 1]["end"]
+        if merged[best_index]["state"] != merged[best_index + 1]["state"]:
+            merged[best_index]["state"] = (0, 0)
+        del merged[best_index + 1]
+    return merged
+
+
+def build_groups(
+    df: pd.DataFrame,
+    min_group_len: int = 3,
+    max_group_count: int = MAX_GROUP_COUNT,
+) -> list[dict[str, object]]:
     normalized = normalize_columns(df)
     states = build_state_series(normalized)
     initial_groups = build_initial_groups(states)
     merged_groups = merge_short_groups(initial_groups, min_group_len=min_group_len)
     jump_thresholds = compute_jump_thresholds(normalized)
-    return split_groups_on_jumps(merged_groups, normalized, jump_thresholds)
+    jumped_groups = split_groups_on_jumps(merged_groups, normalized, jump_thresholds)
+    return merge_groups_to_max_count(jumped_groups, max_group_count=max_group_count)
 
 
 def safe_pearson(a: pd.Series, b: pd.Series) -> float | None:
@@ -336,11 +365,18 @@ def compute_group_metrics(
 
 
 def analyze_sheet(
-    df: pd.DataFrame, sheet_name: str, min_group_len: int
+    df: pd.DataFrame,
+    sheet_name: str,
+    min_group_len: int,
+    max_group_count: int = MAX_GROUP_COUNT,
 ) -> tuple[pd.DataFrame, dict[str, object]]:
     series_a_name, series_b_name = get_series_labels(df)
     normalized = normalize_columns(df)
-    groups = build_groups(normalized, min_group_len=min_group_len)
+    groups = build_groups(
+        normalized,
+        min_group_len=min_group_len,
+        max_group_count=max_group_count,
+    )
     records: list[dict[str, object]] = []
     for group_id, group in enumerate(groups, start=1):
         # 每个 group 都对应原始序列上的一个连续区间，区间内再计算趋势和相似度指标。
@@ -449,6 +485,12 @@ def parse_args() -> argparse.Namespace:
         default=3,
         help="Merge groups shorter than this length into adjacent major trends.",
     )
+    parser.add_argument(
+        "--max-groups",
+        type=int,
+        default=MAX_GROUP_COUNT,
+        help=f"Maximum groups per sheet after all splits and merges. Defaults to {MAX_GROUP_COUNT}.",
+    )
     return parser.parse_args()
 
 
@@ -479,8 +521,17 @@ def main() -> int:
     all_summaries: list[dict[str, object]] = []
     for sheet_name in excel.sheet_names:
         sheet_df = pd.read_excel(input_path, sheet_name=sheet_name)
-        details, summary = analyze_sheet(sheet_df, sheet_name, min_group_len=args.min_group_len)
-        groups = build_groups(sheet_df, min_group_len=args.min_group_len)
+        groups = build_groups(
+            sheet_df,
+            min_group_len=args.min_group_len,
+            max_group_count=args.max_groups,
+        )
+        details, summary = analyze_sheet(
+            sheet_df,
+            sheet_name,
+            min_group_len=args.min_group_len,
+            max_group_count=args.max_groups,
+        )
         plot_sheet_groups(
             sheet_df,
             groups,

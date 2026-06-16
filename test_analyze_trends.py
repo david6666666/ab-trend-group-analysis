@@ -72,6 +72,22 @@ def test_build_groups_splits_large_jump_inside_same_trend():
     assert groups[1]["end"] == 11
 
 
+def test_build_groups_limits_group_count():
+    df = pd.DataFrame(
+        {
+            "X": list(range(60)),
+            "Y_A": [index % 2 for index in range(60)],
+            "Y_B": [(index + 1) % 2 for index in range(60)],
+        }
+    )
+
+    groups = build_groups(df, min_group_len=1, max_group_count=20)
+
+    assert len(groups) <= 20
+    assert groups[0]["start"] == 0
+    assert groups[-1]["end"] == len(df) - 1
+
+
 def test_compute_jump_thresholds_uses_sheet_local_distribution():
     df = pd.DataFrame(
         {
