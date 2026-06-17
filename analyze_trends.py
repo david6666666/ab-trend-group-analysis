@@ -257,19 +257,21 @@ def compute_similarity_score(
     direction_relative_error: float,
     slope_gap_norm: float,
     pearson_corr: float | None,
+    value_relative_error: float,
 ) -> float:
-    # 相似度由四部分组成：
-    # 方向是否一致 + 方向变化幅度相对误差 + 斜率是否接近 + 组内形状相关性。
-    # 权重偏向“趋势方向”和“方向幅度/斜率差”，相关系数作为辅助解释。
+    # 相似度由五部分组成：
+    # 方向是否一致 + 方向变化幅度相对误差 + 斜率是否接近 + 形状相关性 + 数值相对误差。
     direction_score = 1.0 if direction_same else 0.0
-    relative_error_score = max(0.0, 1.0 - direction_relative_error)
+    direction_relative_error_score = max(0.0, 1.0 - direction_relative_error)
     slope_score = max(0.0, 1.0 - slope_gap_norm)
     corr_score = ((pearson_corr + 1.0) / 2.0) if pearson_corr is not None else 0.5
+    value_relative_error_score = max(0.0, 1.0 - value_relative_error)
     return round(
-        0.40 * direction_score
-        + 0.25 * relative_error_score
-        + 0.25 * slope_score
-        + 0.10 * corr_score,
+        0.30 * direction_score
+        + 0.20 * direction_relative_error_score
+        + 0.20 * slope_score
+        + 0.15 * corr_score
+        + 0.15 * value_relative_error_score,
         4,
     )
 
@@ -279,6 +281,13 @@ def compute_direction_relative_error(a_delta: float, b_delta: float) -> float:
         return 0.0
     scale = max(abs(a_delta), abs(b_delta))
     return round(min(abs(a_delta - b_delta) / scale, 1.0), 4)
+
+
+def compute_value_relative_error(a_values: pd.Series, b_values: pd.Series) -> float:
+    denominators = pd.concat([a_values.abs(), b_values.abs()], axis=1).max(axis=1)
+    denominators = denominators.clip(lower=1.0)
+    relative_errors = (a_values - b_values).abs() / denominators
+    return round(min(float(relative_errors.mean()), 1.0), 4)
 
 
 def classify_similarity_level(score: float) -> str:
@@ -328,12 +337,17 @@ def compute_group_metrics(
     scale = max(abs(a_end - a_start), abs(b_end - b_start), 1.0)
     slope_gap_norm = round(abs(a_slope - b_slope) / scale, 4)
     direction_relative_error = compute_direction_relative_error(a_delta, b_delta)
+    value_relative_error = compute_value_relative_error(
+        normalized["Y_A"],
+        normalized["Y_B"],
+    )
     pearson_corr = safe_pearson(normalized["Y_A"], normalized["Y_B"])
     score = compute_similarity_score(
         a_trend == b_trend,
         direction_relative_error,
         slope_gap_norm,
         pearson_corr,
+        value_relative_error,
     )
     # A、B 都完全不变时，不把这类“静止段”评成过高相似，压到中档上限。
     if a_trend == 0 and b_trend == 0:
@@ -359,6 +373,7 @@ def compute_group_metrics(
         "direction_relative_error": direction_relative_error,
         "slope_gap_norm": slope_gap_norm,
         "pearson_corr": None if pearson_corr is None else round(pearson_corr, 4),
+        "value_relative_error": value_relative_error,
         "similarity_score": score,
         "similarity_level": classify_similarity_level(score),
     }

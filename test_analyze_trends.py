@@ -132,14 +132,23 @@ def test_compute_group_metrics_reports_direction_relative_error():
 
     assert metrics["trend_relation"] == "A\u5347B\u5347"
     assert metrics["direction_relative_error"] == 0.75
+    assert metrics["value_relative_error"] == 0.5
 
 
 def test_similarity_score_penalizes_direction_relative_error():
-    matched = compute_similarity_score(True, 0.0, 0.0, 1.0)
-    mismatched_scale = compute_similarity_score(True, 0.75, 0.0, 1.0)
+    matched = compute_similarity_score(True, 0.0, 0.0, 1.0, 0.0)
+    mismatched_scale = compute_similarity_score(True, 0.75, 0.0, 1.0, 0.0)
 
     assert matched == 1.0
     assert mismatched_scale < matched
+
+
+def test_similarity_score_penalizes_value_relative_error():
+    matched = compute_similarity_score(True, 0.0, 0.0, 1.0, 0.0)
+    mismatched_values = compute_similarity_score(True, 0.0, 0.0, 1.0, 0.8)
+
+    assert mismatched_values == 0.88
+    assert mismatched_values < matched
 
 
 def test_analyze_sheet_keeps_original_b_c_labels():
